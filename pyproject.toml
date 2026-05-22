@@ -12,3 +12,8 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "umap-learn>=0.5.12",
 ]
+
+[dependency-groups]
+dev = [
+    "markdown>=3.10.2",
+]
