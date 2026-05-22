@@ -1,163 +1,192 @@
-% Assignment 4 - Pokemon Analysis
+% Übung 4 - Pokemon-Analyse
 % Eric Buchinger
 % IEM.DAM2, SS 2026
 
-# Assignment 4 - Pokemon Analysis
+# Übung 4 - Pokemon-Analyse
 
-**Course:** IEM.DAM2, SS 2026
-**Author:** Eric Buchinger
-**Dataset:** `pokedex.csv` (898 Pokemon, 6 base stats, height/weight, 17 one-hot type columns, thumbnails)
-
----
-
-## Overview
-
-This document summarizes the solution to Assignment 4. The full implementation is in `main.py` (script) and `ue04_analysis.ipynb` (annotated notebook). Dependencies are managed with `uv` (`pyproject.toml`, `uv.lock`); reproduce with `uv sync`.
-
-The five tasks were:
-
-1. Design a meaningful distance function and compute the pairwise distance matrix.
-2. Cluster the Pokemon and justify the parameters with the silhouette score.
-3. Visualize the clustering in 2D with tSNE and UMAP.
-4. Identify outliers and characterize them.
-5. Discuss findings and reflect on the process.
+**Lehrveranstaltung:** IEM.DAM2, SS 2026
+**Autor:** Eric Buchinger
+**Datensatz:** `pokedex.csv` (898 Pokemon, 6 Basis-Stats, Größe/Gewicht, 17 One-Hot Type-Spalten, Thumbnails)
 
 ---
 
-## 1. Distance Function
+## Überblick
 
-A Pokemon is described by three very different kinds of attributes, so a single metric on the raw feature vector doesn't make sense. Instead I built **three normalized distance blocks** and combined them with weights.
+Dieses Dokument fasst die Lösung zur Übung 4 zusammen. Die vollständige Implementierung findet sich in `main.py` (Skript) und `ue04_solution.ipynb` (kommentiertes Notebook). Die Abhängigkeiten werden mit `uv` verwaltet (`pyproject.toml`, `uv.lock`); reproduzierbar via `uv sync`.
 
-| Block      | Features                                              | Metric                                | Why                                                                                                 |
+Die fünf Teilaufgaben waren:
+
+1. Entwurf einer sinnvollen Distanzfunktion und Berechnung der paarweisen Distanzmatrix.
+2. Clustering der Pokemon mit Begründung der Parameterwahl durch den Silhouettenkoeffizienten.
+3. 2D-Visualisierung des Clusterings mit tSNE und UMAP.
+4. Identifikation von Ausreißern und Charakterisierung.
+5. Diskussion der Ergebnisse und Reflexion.
+
+---
+
+## 1. Distanzfunktion
+
+Ein Pokemon wird durch drei sehr unterschiedliche Arten von Attributen beschrieben, weshalb eine einzelne Metrik auf dem rohen Feature-Vektor wenig sinnvoll ist. Stattdessen wurden **drei normalisierte Distanzblöcke** gebaut und mit Gewichten kombiniert.
+
+| Block      | Features                                              | Metrik                                | Begründung                                                                                          |
 |------------|-------------------------------------------------------|---------------------------------------|-----------------------------------------------------------------------------------------------------|
-| **Stats**  | HP, Attack, Defense, Sp. Atk, Sp. Def, Speed          | standardized Euclidean                | continuous values; z-scoring makes magnitudes comparable                                            |
-| **Types**  | 17 one-hot type columns                                | Jaccard                               | set similarity; "water+ice" stays close to "water+flying" but far from "fire+rock"                  |
-| **Size**   | height, weight                                         | standardized Euclidean on `log1p`     | heavy-tailed; `log1p` dampens Wailord-style outliers dominating the metric                          |
+| **Stats**  | HP, Attack, Defense, Sp. Atk, Sp. Def, Speed          | standardisierte Euklidische           | kontinuierliche Werte; Z-Standardisierung macht Größenordnungen vergleichbar                        |
+| **Types**  | 17 One-Hot Type-Spalten                                | Jaccard                               | Mengenähnlichkeit; "Water+Ice" bleibt nahe an "Water+Flying", aber weit entfernt von "Fire+Rock"    |
+| **Size**   | Größe, Gewicht                                         | standardisierte Euklidische auf `log1p` | starkes Tail-Verhalten; `log1p` verhindert, dass Pokemon wie Wailord die Metrik dominieren          |
 
-Each block is rescaled into roughly `[0, 1]` and then combined as
+Jeder Block wird auf etwa `[0, 1]` skaliert und anschließend wie folgt kombiniert:
 
 $$D = w_{\text{stats}}\, D_{\text{stats}} + w_{\text{types}}\, D_{\text{types}} + w_{\text{size}}\, D_{\text{size}}$$
 
-with defaults `(0.5, 0.4, 0.1)` - stats are the richest signal, types a strong secondary vote, size a small nudge.
+Standardgewichte `(0.5, 0.4, 0.1)` - die Stats liefern das informationsreichste Signal, Types ein starkes Sekundär-Votum, die Größe gibt einen kleinen Zusatz-Impuls.
 
-### Sanity check
+### Plausibilitätscheck
 
-Nearest neighbours of a few well-known Pokemon line up with intuition:
+Die nächsten Nachbarn einiger bekannter Pokemon entsprechen der Intuition:
 
-- **Bulbasaur** -> Caterpie, Weedle, Oddish (small Grass/Bug starters)
-- **Charizard** -> Salamence, Dragonite, Aerodactyl (high-stat Flying/Dragon)
-- **Pikachu** -> Raichu, Pichu, other Electric mice
-- **Snorlax** -> Munchlax, Vigoroth, Hariyama (heavy, high-HP)
+- **Bisasam** -> Raupy, Hornliu, Myrapla (kleine Pflanzen-/Käfer-Starter)
+- **Glurak** -> Brutalanda, Dragoran, Aerodactyl (offensive Flug/Drache mit hohen Stats)
+- **Pikachu** -> Raichu, Pichu, weitere Elektro-Mäuse
+- **Relaxo** -> Mampfaxo, Muntier, Hariyama (schwer, hohe HP)
 
-Resulting matrix is `898 x 898` with `min=0`, `mean≈0.52`, `max≈0.94`.
+Die resultierende Matrix hat die Form `898 x 898` mit `min=0`, `mean≈0.52`, `max≈0.94`.
 
 ---
 
 ## 2. Clustering
 
-**Algorithm:** agglomerative clustering with **average linkage** - it consumes a precomputed distance matrix directly and is robust to non-Euclidean metrics. I swept `k` from 3 to 12 and picked the `k` with the best silhouette score (computed on the precomputed distance).
+**Gewählter Algorithmus:** Agglomeratives Clustering mit **Average Linkage**.
 
-### Silhouette results
+### Warum agglomeratives Clustering die beste Wahl ist
+
+Die Entscheidung folgt direkt aus den Eigenschaften unserer Daten und einem systematischen Ausschluss der Alternativen:
+
+1. **Wir haben eine vorberechnete, nicht-euklidische Distanzmatrix.**
+   Unsere kombinierte Distanz aus standardisierter Euklidischer Distanz (Stats), Jaccard (Types) und log-skalierter Euklidischer Distanz (Size) erzeugt eine Metrik, die nicht in einen euklidischen Vektorraum eingebettet ist. Algorithmen, die intern Mittelwerte berechnen, sind damit nicht direkt anwendbar.
+
+2. **k-Means scheidet aus.**
+   k-Means setzt einen euklidischen Feature-Raum voraus, weil es Centroiden als arithmetische Mittel berechnet. Über einer Jaccard-Distanz ist der Centroid mathematisch nicht definiert. Eine erzwungene Anwendung würde die Type-Information verfälschen.
+
+3. **Ward-Linkage scheidet aus dem gleichen Grund aus.**
+   Ward minimiert die Varianz innerhalb der Cluster und benötigt damit ebenfalls quadrierte euklidische Distanzen. `sklearn` lehnt `metric="precomputed"` mit Ward sogar explizit ab.
+
+4. **DBSCAN/HDBSCAN funktioniert, ist hier aber zu rigoros.**
+   HDBSCAN wurde als Vergleich mit gelaufen, labelt aber ~40 % der Punkte als Rauschen. Das ist für die Ausreißer-Aufgabe nützlich, aber als Hauptclustering ungeeignet - wir wollen eine vollständige Partition aller Pokemon, nicht nur der "dichten" Bereiche.
+
+5. **Spektrales Clustering wäre möglich, ist aber schwerer zu tunen.**
+   Spektrales Clustering benötigt eine Ähnlichkeitsmatrix (nicht Distanz), zusätzliche Kernel-Parameter und eine eigene Embedding-Dimension. Der Aufwand-Nutzen-Vergleich gegenüber agglomerativem Clustering rechtfertigt das hier nicht.
+
+6. **Average Linkage statt Single oder Complete.** *Single Linkage* tendiert zu langen Ketten ("chaining effect") - ein einzelnes verbindendes Pokemon kann zwei sehr unterschiedliche Gruppen zusammenführen. *Complete Linkage* reagiert sehr empfindlich auf Ausreißer, weil die maximale Distanz zwischen zwei Cluster-Punkten den Merge steuert. *Average Linkage* ist der Kompromiss: robust gegenüber Ausreißern, neigt nicht zu Ketten und erzeugt kompakte, etwa gleich große Cluster. Genau das wollen wir bei einem heterogenen Datensatz wie diesem.
+
+7. **Praktischer Vorteil: direkter Konsum der Distanzmatrix.**
+   Agglomeratives Clustering mit `metric="precomputed"` greift unsere Distanzmatrix unverändert auf. Damit bleibt die sorgfältig konstruierte Distanzfunktion aus Schritt 1 die alleinige Quelle der Wahrheit für die Clusterbildung - keine Feature-Re-Engineering, keine impliziten Annahmen.
+
+### Parameterwahl: Silhouettenkoeffizient
+
+Es wurde `k` von 3 bis 12 durchsucht und das `k` mit dem höchsten Silhouettenkoeffizienten (berechnet auf der vorberechneten Distanz) gewählt.
 
 | k   | 3      | 4      | 5      | 6      | 7      | 8      | 9      | 10     | 11     | 12         |
 |-----|--------|--------|--------|--------|--------|--------|--------|--------|--------|------------|
 | sil | 0.0677 | 0.0682 | 0.0689 | 0.0935 | 0.1442 | 0.1576 | 0.1833 | 0.2065 | 0.2147 | **0.2551** |
 
-**Chosen k = 12** (silhouette = 0.2551). Scores rise monotonically, which is a hint that the dataset is more of a continuum than a set of well-separated clusters.
+**Gewähltes k = 12** (Silhouette = 0.2551). Der monotone Anstieg der Scores ist ein Indiz dafür, dass der Datensatz eher ein Kontinuum als eine Menge gut getrennter Cluster bildet.
 
-**HDBSCAN** (density-based, `min_cluster_size=15`, `min_samples=5`) found 14 clusters and labelled **367 points as noise** (~40 %), reinforcing the same conclusion: many Pokemon live in sparse regions of the metric.
-
----
-
-## 3. Visualization (tSNE & UMAP)
-
-Both algorithms accept the precomputed distance directly.
-
-- **tSNE**: `perplexity=30`, `init="random"` - a sensible default for ~900 points.
-- **UMAP**: `n_neighbors=20`, `min_dist=0.1` - tighter, more cluster-like blobs than the defaults.
-
-![tSNE and UMAP, colored by agglomerative cluster (k=12)](figures/embeddings_agglom.png)
-
-![tSNE and UMAP, colored by HDBSCAN labels (grey = noise)](figures/embeddings_hdbscan.png)
-
-Both embeddings show the same coarse structure: high-stat / legendary Pokemon at one end, small early-stage Pokemon at the other, and type-flavored sub-blobs in between (water, bug, rock groups are visible). HDBSCAN's noise points scatter across the boundaries, exactly where outliers should sit.
+**HDBSCAN** (dichtebasiert, `min_cluster_size=15`, `min_samples=5`) fand 14 Cluster und markierte **367 Punkte als Rauschen** (~40 %), was diese Beobachtung untermauert: viele Pokemon liegen in dünn besetzten Regionen der Metrik.
 
 ---
 
-## 4. Outlier Detection
+## 3. Visualisierung (tSNE & UMAP)
 
-I used three complementary lenses and looked for **consensus**:
+Beide Algorithmen akzeptieren die vorberechnete Distanz direkt.
 
-- **Local Outlier Factor (LOF)** on the precomputed distance - flags points whose local density is much lower than that of their neighbours.
-- **Isolation Forest** on the distance rows - flags points whose "distance fingerprint" is unusual overall (more global).
-- **HDBSCAN noise** - points that couldn't be placed into any cluster.
+- **tSNE**: `perplexity=30`, `init="random"` - ein sinnvoller Default für ~900 Punkte.
+- **UMAP**: `n_neighbors=20`, `min_dist=0.1` - kompaktere, deutlicher abgesetzte Cluster als mit den Default-Werten.
 
-With `contamination = 0.03`, each of LOF and Isolation Forest flagged 27 Pokemon; HDBSCAN flagged 367.
+![tSNE und UMAP, eingefärbt nach agglomerativem Cluster (k=12)](figures/embeddings_agglom.png)
 
-### Top consensus outliers
+![tSNE und UMAP, eingefärbt nach HDBSCAN-Labels (grau = Rauschen)](figures/embeddings_hdbscan.png)
 
-| Name       | Stat total | Types            | Flags         |
+Beide Embeddings zeigen dieselbe grobe Struktur: hochstatige Pokemon / Legendäre auf der einen Seite, kleine frühe Entwicklungsstufen auf der anderen, dazwischen typ-gefärbte Sub-Blobs (Wasser, Käfer, Gestein klar erkennbar). Die HDBSCAN-Rauschpunkte verteilen sich an den Cluster-Rändern - genau dort, wo Ausreißer zu erwarten sind.
+
+---
+
+## 4. Ausreißererkennung
+
+Drei komplementäre Methoden, die im Konsens ausgewertet werden:
+
+- **Local Outlier Factor (LOF)** auf der vorberechneten Distanz - markiert Punkte, deren lokale Dichte deutlich unter der ihrer Nachbarn liegt.
+- **Isolation Forest** auf den Distanzzeilen - markiert Punkte mit ungewöhnlichem "Distanz-Fingerprint" (eher globale Sicht).
+- **HDBSCAN-Rauschen** - Punkte, die keinem Cluster zugeordnet werden konnten.
+
+Mit `contamination = 0.03` markierten LOF und Isolation Forest je 27 Pokemon; HDBSCAN markierte 367.
+
+### Top-Ausreißer im Konsens
+
+| Name       | Stat-Summe | Types            | Flags         |
 |------------|------------|------------------|---------------|
-| Chansey    | 450        | (none / normal)  | LOF + ISO     |
-| Blissey    | 540        | (none / normal)  | LOF + ISO     |
-| Shuckle    | 505        | bug, rock        | ISO + HDB     |
-| Steelix    | 510        | ground, steel    | ISO + HDB     |
+| Chansey    | 450        | (keine / normal) | LOF + ISO     |
+| Heiteira   | 540        | (keine / normal) | LOF + ISO     |
+| Pottrott   | 505        | bug, rock        | ISO + HDB     |
+| Stahlos    | 510        | ground, steel    | ISO + HDB     |
 | Lugia      | 680        | psychic, flying  | ISO + HDB     |
-| Wobbuffet  | 405        | psychic          | ISO           |
-| Poliwrath  | 510        | water, fighting  | LOF + HDB     |
+| Woingenau  | 405        | psychic          | ISO           |
+| Quappo     | 510        | water, fighting  | LOF + HDB     |
 | Lanturn    | 460        | water, electric  | LOF + HDB     |
 | Marill     | 250        | water, fairy     | LOF + HDB     |
 
-![tSNE and UMAP with outliers circled in red](figures/embeddings_outliers.png)
+![tSNE und UMAP mit rot markierten Ausreißern](figures/embeddings_outliers.png)
 
-### What makes them outliers?
+### Was macht sie zu Ausreißern?
 
-Four recurring patterns:
+Vier wiederkehrende Muster:
 
-- **Unusual stat shapes** - Chansey/Blissey have huge HP but almost no defenses; Shuckle has extreme defenses and barely any offense.
-- **Unusual type combinations** - Water+Electric (Lanturn), Water+Fighting (Poliwrath), Bug+Rock (Shuckle) are rare combos far from the dense type clusters.
-- **Unusual size** - Steelix (~400 kg) sits in the tail of the size distribution.
-- **Legendaries** - high stat totals plus rare type combos (Lugia: Psychic+Flying, total 680).
+- **Ungewöhnliche Stat-Profile** - Chansey/Heiteira haben enorme HP, aber kaum Defensiv-Werte; Pottrott hat extreme Verteidigung und kaum Offensive.
+- **Ungewöhnliche Typ-Kombinationen** - Water+Electric (Lanturn), Water+Fighting (Quappo), Bug+Rock (Pottrott) sind seltene Kombinationen weit ab von den dichten Typ-Clustern.
+- **Ungewöhnliche Größe** - Stahlos (~400 kg) liegt klar im Tail der Größenverteilung.
+- **Legendäre** - hohe Stat-Summen plus seltene Typ-Kombinationen (Lugia: Psychic+Flying, Stat-Summe 680).
 
-All four are exactly the kind of "different" we'd want an outlier method to catch.
-
----
-
-## 5. Discussion and Reflection
-
-### What worked well
-
-- The block-based distance (stats + types + size) is interpretable and easy to tune. Swapping the weights moves the clustering between "stat-driven" and "type-driven" in a predictable way.
-- Average-linkage agglomerative on the precomputed matrix paired nicely with the silhouette sweep - no need to re-derive features for the clustering step.
-- Multiple outlier methods cross-checking each other gave more confidence than any single method. The consensus list (Chansey, Blissey, Shuckle, Steelix, Lugia, ...) reads exactly like the Pokemon a fan would point at as "weird".
-
-### Challenges
-
-- Choosing block weights is subjective. Type Jaccard is coarse (most Pokemon share at most 1-2 types), so it had to be downweighted relative to stats to avoid one giant blob per type.
-- Height/weight are heavy-tailed; without `log1p` Wailord dominates the size distance.
-- Silhouette on a mixed distance is a relative signal, not absolute - "best k" just means "least bad among the values tried". Scores kept climbing with `k`, which suggests the data is more of a continuum than well-separated clusters.
-- HDBSCAN labelling ~40 % of points as noise reinforces that density is very uneven.
-
-### If I had more time
-
-- **Use the thumbnails** - feed them through a pretrained CNN (CLIP or a small ResNet) and add an image-embedding block to the distance.
-- **Tune block weights** with a grid search against a downstream metric (type-purity of clusters, or recovery of known evolutionary families).
-- **Compare more clustering algorithms** (spectral, OPTICS, k-medoids) and report stability across random seeds.
-- **Per-generation analysis** - cluster within and across generations to see whether stat power creep shows up as drift in the embedding.
+Alle vier sind exakt die Art von "anders", die eine Ausreißererkennung finden soll.
 
 ---
 
-## Reproducing the analysis
+## 5. Diskussion und Reflexion
+
+### Was gut funktioniert hat
+
+- **tSNE-Visualisierung war das Highlight des Projekts.** Mit `perplexity=30` und der vorberechneten Distanzmatrix entstand fast ohne Tuning ein Ergebnis, das die Stat-/Typ-Struktur klar abbildet - hochstatige Legendäre am Rand, frühe Entwicklungsstufen kompakt zusammen, Typ-Familien als sichtbare Sub-Blobs. Die Implementierung war ein Dreizeiler mit `sklearn.manifold.TSNE`, und der Output hat sofort Sinn ergeben. Das ist genau der Punkt, an dem man merkt, dass die vorgelagerte Distanzfunktion gut gewählt war: wenn die Projektion Struktur zeigt, hat die Metrik bereits die richtige getroffen.
+- Der blockweise Aufbau der Distanz (Stats + Types + Size) war ebenfalls hilfreich, weil sich die Beiträge einzeln anschauen und gewichten lassen.
+- Mehrere Ausreißermethoden gegeneinander zu prüfen, lieferte deutlich verlässlichere Kandidaten als jede Methode allein.
+
+### Herausforderungen
+
+- **Die Distanzfunktion war der schwierigste Teil.** Drei sehr unterschiedliche Datentypen (kontinuierliche Stats, kategoriale Typen-Sets, heavy-tailed Größenwerte) auf eine einzige skalare Distanz abzubilden ist nicht objektiv lösbar - jede Wahl ist eine Designentscheidung. Konkrete Stolpersteine:
+  - **Block-Gewichte sind subjektiv.** Die Wahl `(0.5, 0.4, 0.1)` ist plausibel, aber jede andere Aufteilung verändert die Cluster spürbar. Ohne ein objektives Optimierungsziel (z. B. Type-Reinheit) bleibt das eine begründete, aber nicht beweisbare Wahl.
+  - **Jaccard ist auf One-Hot-Type-Vektoren grob.** Da die meisten Pokemon nur 1-2 Typen haben, kann die Jaccard-Distanz nur wenige diskrete Werte annehmen. Das musste durch Untergewichtung gegenüber Stats kompensiert werden, sonst entstand pro Typ ein riesiger Blob.
+  - **Heavy Tails bei Größe/Gewicht.** Ohne `log1p` hat Wailord allein die Größendistanz dominiert. Erst die Log-Skalierung hat das Problem entschärft - das musste durch ausprobieren herausgefunden werden.
+- Der Silhouettenkoeffizient stieg monoton mit `k` - "bestes k" bedeutet hier nur "am wenigsten schlecht unter den getesteten Werten". Das deutet auf ein Kontinuum hin und ist eine grundsätzliche Limitation der Datenlage, nicht der Methode.
+- Dass HDBSCAN ~40 % der Punkte als Rauschen markiert, bestätigt: die Dichte im Raum ist sehr ungleichmäßig.
+
+### Mit mehr Zeit
+
+- **Thumbnails verwenden** - die Bilder durch ein vortrainiertes CNN (z. B. CLIP oder einen kleinen ResNet) schicken und ein Bild-Embedding als vierten Distanzblock hinzufügen. Damit ließe sich die visuelle Ähnlichkeit (Farbe, Form, Pose) zusätzlich abbilden.
+- **Block-Gewichte systematisch tunen** - per Grid Search gegen eine downstream-Metrik wie Typ-Reinheit der Cluster oder Wiederfindung bekannter Evolutionslinien. Das würde die größte subjektive Schwachstelle der aktuellen Lösung adressieren.
+- **Mehr Clusterverfahren vergleichen** - spektrales Clustering, OPTICS und k-Medoids gegen die aktuelle Wahl benchmarken und Stabilität über mehrere Random Seeds berichten.
+- **Analyse pro Generation** - separat innerhalb und über Generationen clustern, um zu sehen, ob der Power-Creep der Hauptserie sich als Drift im Embedding zeigt.
+- **Interaktive Visualisierung** - die tSNE-/UMAP-Plots als interaktives Bokeh- oder Plotly-Dashboard mit Hover-Thumbnails wären didaktisch deutlich wertvoller als statische PNGs.
+
+---
+
+## Reproduzieren der Analyse
 
 ```bash
-uv sync                                    # install dependencies
-uv run python main.py                      # run the script (regenerates figures/)
-uv run jupyter lab ue04_solution.ipynb     # interactive notebook
+uv sync                                    # Abhängigkeiten installieren
+uv run python main.py                      # Skript ausführen (erzeugt figures/ neu)
+uv run jupyter lab ue04_solution.ipynb     # interaktives Notebook
 ```
 
-Files:
+Dateien:
 
-- `main.py` - end-to-end script
-- `ue04_analysis.ipynb` - annotated notebook
-- `pyproject.toml`, `uv.lock` - dependency pinning
-- `figures/` - generated PNGs
+- `main.py` - End-to-End-Skript
+- `ue04_solution.ipynb` - kommentiertes Notebook
+- `pyproject.toml`, `uv.lock` - Dependency-Pinning
+- `figures/` - generierte PNGs
